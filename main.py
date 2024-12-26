@@ -1,41 +1,85 @@
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 import requests
-import json
+from bs4 import BeautifulSoup
 
-# Enable logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Define your API details
 API_URL = "http://ws.audioscrobbler.com/2.0/"
 API_KEY = "c3bffda04ecb9d62f7008b0fb28fa1eb"
-
 
 # Command: Start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
+    keyboard = [
+        [InlineKeyboardButton("Search", callback_data="search")],
+        [InlineKeyboardButton("Charts", callback_data="charts")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
-        "Welcome to the Music Info Bot! \n\n"
-        "Commands:\n"
-        "/search <song name> - Search for a song.\n"
-        "/top <genre> - Get top songs by genre.\n"
-        "/preferences - Save or show your preferences."
+        "Welcome to the Music Info Bot! Choose an option:",
+        reply_markup=reply_markup
     )
 
+# Callback handler for button clicks
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle button presses."""
+    query = update.callback_query
+    await query.answer()
 
-# Method 1: Search for a song by name
-async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if query.data == "search":
+        await query.edit_message_text(
+            "Please enter the name of the song you want to search for."
+        )
+        context.user_data['awaiting_search'] = True
+    elif query.data == "charts":
+        await query.edit_message_text("Fetching top charts...")
+        await fetch_top_charts(update, context)
+
+# Fetch top charts from Last.fm
+async def fetch_top_charts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Retrieve top 5 songs from Last.fm charts."""
+    url = "https://www.last.fm/charts"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        tracks = soup.select('td.chartlist-name a.chartlist-name-link')
+        artists = soup.select('td.chartlist-artist a')
+
+        if tracks and artists:
+            reply = "Top 5 Songs on Last.fm Charts:\n"
+            for i in range(min(5, len(tracks))):
+                song = tracks[i].text.strip()
+                artist = artists[i].text.strip()
+                reply += f"{i + 1}. {song} by {artist}\n"
+        else:
+            reply = "Could not retrieve chart data."
+    else:
+        reply = "Error: Unable to connect to Last.fm charts."
+
+    await update.callback_query.edit_message_text(reply)
+
+# Handle song search input
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle user input for song search."""
+    if context.user_data.get('awaiting_search'):
+        context.user_data['awaiting_search'] = False
+        song_name = update.message.text
+        await search_song_by_name(update, context, song_name)
+
+# Search for a song by name
+async def search_song_by_name(update: Update, context: ContextTypes.DEFAULT_TYPE, song_name: str) -> None:
     """Search for a song by its name."""
-    if len(context.args) == 0:
-        await update.message.reply_text("Please provide a song name to search.")
-        return
-
-    song_name = " ".join(context.args)
     params = {
         'method': 'track.search',
         'track': song_name,
@@ -48,76 +92,24 @@ async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if response.status_code == 200:
         data = response.json()
         if 'results' in data and 'trackmatches' in data['results']:
-            if data['results']['trackmatches']['track']:
-                song_info = data['results']['trackmatches']['track'][0]
-                reply = (
-                    f"Song: {song_info['name']}\n"
-                    f"Artist: {song_info['artist']}\n"
-                    f"Album: {song_info.get('album', 'N/A')}\n"
-                )
+            tracks = data['results']['trackmatches']['track']
+            if tracks:
+                reply = f"Found {len(tracks)} result(s) for '{song_name}':\n"
+                for idx, song_info in enumerate(tracks[:5]):  # Limit to top 5 results
+                    album = song_info.get('album', 'N/A')
+                    reply += (
+                        f"{idx + 1}. Song: {song_info['name']}\n"
+                        f"   Artist: {song_info['artist']}\n"
+                        f"   Album: {album}\n\n"
+                    )
             else:
-                reply = "No results found for your query."
+                reply = f"No results found for '{song_name}'."
         else:
             reply = "Error: No results found."
     else:
         reply = "Error: Unable to connect to the music API."
 
     await update.message.reply_text(reply)
-
-
-# Method 2: Get top songs by genre
-async def top_songs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Retrieve top songs for a specific genre."""
-    if len(context.args) == 0:
-        await update.message.reply_text("Please provide a genre to get top songs.")
-        return
-
-    genre = " ".join(context.args)
-    params = {
-        'method': 'tag.gettoptracks',
-        'tag': genre,
-        'api_key': API_KEY,
-        'format': 'json'
-    }
-
-    response = requests.get(API_URL, params=params)
-
-    if response.status_code == 200:
-        data = response.json()
-        if 'toptracks' in data['tracks']:
-            reply = f"Top songs in the genre {genre}:\n"
-            for song in data['tracks']['track'][:5]:  # Display top 5 songs
-                reply += f"- {song['name']} by {song['artist']['name']}\n"
-        else:
-            reply = "No top songs found for the specified genre."
-    else:
-        reply = "Error: Unable to retrieve top songs."
-
-    await update.message.reply_text(reply)
-
-
-# Method 3: Save and display user preferences
-async def preferences(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Save or display user preferences."""
-    user_id = update.message.from_user.id
-
-    if len(context.args) == 0:
-        # Display saved preferences
-        preferences = context.user_data.get("preferences", {})
-        if preferences:
-            reply = "Your saved preferences:\n" + json.dumps(preferences, indent=2)
-        else:
-            reply = "No preferences saved yet. Use /preferences <key=value> to save preferences."
-    else:
-        # Save new preferences
-        for arg in context.args:
-            if "=" in arg:
-                key, value = arg.split("=", 1)
-                context.user_data.setdefault("preferences", {})[key] = value
-        reply = "Preferences saved!"
-
-    await update.message.reply_text(reply)
-
 
 # Error handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -126,7 +118,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     if isinstance(update, Update):
         await update.message.reply_text("An error occurred. Please try again later.")
 
-
 # Main function to start the bot
 def main() -> None:
     """Start the bot."""
@@ -134,16 +125,14 @@ def main() -> None:
 
     # Register handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("search", search_song))
-    application.add_handler(CommandHandler("top", top_songs))
-    application.add_handler(CommandHandler("preferences", preferences))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Log all errors
     application.add_error_handler(error_handler)
 
     # Run the bot
     application.run_polling()
-
 
 if __name__ == "__main__":
     main()
