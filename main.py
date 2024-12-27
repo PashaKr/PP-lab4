@@ -1,5 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -51,7 +50,6 @@ def get_song_details_via_api(song_id: int) -> dict:
     song_data = data['response']['song']
 
     return {
-        # Некоторые песни могут не содержать информацию о продюсере
         "release_date": song_data.get("release_date", "Не указано")
     }
 
